@@ -23,6 +23,15 @@ from private_gpt.server.ingest.ingest_service import IngestService
 from private_gpt.settings.settings import settings
 from private_gpt.ui.images import logo_svg
 
+import re
+def numerical_sort_key(s):
+
+    # Extracting the numerical part using regular expression
+
+    num_part = re.match(r'\d+', s).group()
+
+    return int(num_part)
+
 logger = logging.getLogger(__name__)
 
 THIS_DIRECTORY_RELATIVE = Path(__file__).parent.relative_to(PROJECT_ROOT_PATH)
@@ -33,7 +42,7 @@ UI_TAB_TITLE = "My Private GPT"
 
 SOURCES_SEPARATOR = "\n\n Sources: \n"
 
-MODES = ["Query Files", "Search Files", "LLM Chat (no context from files)"]
+MODES = ["Text Chunks", "Unique Files", "Query Files", "LLM Chat"]
 
 
 class Source(BaseModel):
@@ -171,9 +180,10 @@ class PrivateGptUi:
                 )
                 yield from yield_deltas(llm_stream)
 
-            case "Search Files":
+            case "Text Chunks":                
+                k_limit_chunks = 10
                 response = self._chunks_service.retrieve_relevant(
-                    text=message, limit=4, prev_next_chunks=0
+                    text=message, limit=k_limit_chunks, prev_next_chunks=0
                 )
 
                 sources = Source.curate_sources(response)
@@ -183,6 +193,38 @@ class PrivateGptUi:
                     f"(page {source.page})**\n "
                     f"{source.text}"
                     for index, source in enumerate(sources, start=1)
+                )
+
+            case "Unique Files":
+                k_limit_docs = 5
+                k_limit_chunks = 0
+                len_unique_sf = 0
+                timer = 5
+                
+                while (len_unique_sf < k_limit_docs) and timer > 0:
+                   timer -= 1
+                   k_limit_chunks += (k_limit_docs - len_unique_sf)*2
+                   # print(k_limit_chunks)
+                   response = self._chunks_service.retrieve_relevant(
+                       text=message, limit=k_limit_chunks, prev_next_chunks=0
+                   )
+                   sources = Source.curate_sources(response)
+                   source_files = [source.file for source in sources]
+                   unique_sf = set(source_files)
+                   len_unique_sf = len(unique_sf)
+                   print(len_unique_sf)
+
+                sources_filtered = []
+                for source in sources:
+                   if source.file in unique_sf:
+                      unique_sf.remove(source.file)
+                      sources_filtered.append(source)
+
+                yield "\n\n\n".join(
+                    f"{index}. **{source.file} "
+                    f"(page {source.page})**\n "
+                    f"{source.text}"
+                    for index, source in enumerate(sources_filtered[:5], start=1)
                 )
 
     # On initialization and on mode change, this function set the system prompt
@@ -226,6 +268,10 @@ class PrivateGptUi:
                 "file_name", "[FILE NAME MISSING]"
             )
             files.add(file_name)
+	
+	# Sort the files
+        files = sorted(files, key=numerical_sort_key) # Addition to show ingested file in ascending order
+
         return [[row] for row in files]
 
     def _upload_file(self, files: list[str]) -> None:
@@ -323,8 +369,8 @@ class PrivateGptUi:
                 with gr.Column(scale=3):
                     mode = gr.Radio(
                         MODES,
-                        label="Mode",
-                        value="Query Files",
+                        label="Search mode",
+                        value="Text Chunks",
                     )
                     upload_button = gr.components.UploadButton(
                         "Upload File(s)",
